@@ -7836,7 +7836,7 @@ const quizData = [
     "pref": "東京都",
     "city": "墨田区",
     "place": "吾嬬",
-    "reading": "あづま→あずま",
+    "reading": "あずま",
     "desc": "東京都墨田区にある難読地名。"
   },
   {
@@ -15506,9 +15506,9 @@ const quizData = [
   },
   {
     "pref": "岐阜県",
-    "city": "はら、かがみはら） - 各務原市",
+    "city": "各務原市",
     "place": "各務原",
-    "reading": "かかみ（が",
+    "reading": "かかみがはら、かがみはら",
     "desc": "岐阜県はら、かがみはら） - 各務原市にある難読地名。"
   },
   {
@@ -24890,13 +24890,6 @@ const quizData = [
     "place": "吐生",
     "reading": "はぶ",
     "desc": "和歌山県東牟婁郡串本町にある難読地名。"
-  },
-  {
-    "pref": "和歌山県",
-    "city": "",
-    "place": "和歌山難読地名事典Ver.1.8",
-    "reading": "Web Archive",
-    "desc": "和歌山県にある難読地名。"
   },
   {
     "pref": "鳥取県",

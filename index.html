@@ -34,6 +34,7 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            min-height: 100dvh;
             padding: 8px;
             overflow-x: hidden;
         }
@@ -996,9 +997,18 @@
             'kyushu-okinawa': "20 680 380 310"
         };
 
+        // 「東京都」→「東京」、「京都府」→「京都」のように、末尾の都・府・県だけを取る
+        // （以前は文字をすべて消していたため「京都」が「京」になっていた）
         function cleanPrefName(str) {
             if (!str) return '';
-            return str.replace(/[都府県]/g, '').split('/')[0].trim();
+            const s = str.split('/')[0].trim();
+            if (s === '京都' || s === '京都府') return '京都';
+            return s.replace(/[都府県]$/, '');
+        }
+
+        // 市区町村の欄に混ざっている解説文（全角スペース以降）と脚注[1]を取り除く
+        function shortCity(city) {
+            return (city || '').split('　')[0].replace(/\[\d+\]/g, '').trim();
         }
 
         function formatPrefName(cleanName) {
@@ -1010,12 +1020,42 @@
         }
 
         function loadProgress() {
-            const saved = localStorage.getItem(STORAGE_KEY);
-            return saved ? JSON.parse(saved) : {};
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                const progress = saved ? JSON.parse(saved) : {};
+                // 旧バージョンで「京都」が「京」として保存されていた記録を引き継ぐ
+                Object.keys(progress).forEach(key => {
+                    if (key.startsWith('京_')) {
+                        progress['京都_' + key.slice(2)] = progress[key];
+                        delete progress[key];
+                    }
+                });
+                return progress;
+            } catch (e) {
+                return {};
+            }
         }
 
         function saveProgress(progress) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+            } catch (e) {
+                // 保存できない環境（プライベートブラウズなど）でも学習は続けられる
+            }
+        }
+
+        // 同じ県に同じ地名が複数ある場合は、市区町村も含めて別のカードとして記録する
+        const baseKeyCount = {};
+        if (typeof quizData !== 'undefined') {
+            quizData.forEach(item => {
+                const k = `${cleanPrefName(item.pref)}_${item.place}`;
+                baseKeyCount[k] = (baseKeyCount[k] || 0) + 1;
+            });
+        }
+
+        function progressKey(item) {
+            const base = `${cleanPrefName(item.pref)}_${item.place}`;
+            return baseKeyCount[base] > 1 ? `${base}_${shortCity(item.city)}` : base;
         }
 
         function shuffleArray(array) {
@@ -1174,10 +1214,7 @@
 
                 if (targetData.length === 0) return;
 
-                const unmastered = targetData.filter(item => {
-                    const key = `${cleanPrefName(item.pref)}_${item.place}`;
-                    return !userProgress[key] || userProgress[key] !== 'mastered';
-                });
+                const unmastered = targetData.filter(item => userProgress[progressKey(item)] !== 'mastered');
 
                 activePool = unmastered.length > 0 ? unmastered : targetData;
             }
@@ -1193,7 +1230,7 @@
             sessionMasteredCount = 0;
             sessionAgainCount = 0;
 
-            modeTag.textContent = limitCount ? `${label} (10問)` : label;
+            modeTag.textContent = limitCount ? `${label} (${sessionDeck.length}問)` : label;
 
             homeScreen.classList.remove('active');
             quizScreen.classList.add('active');
@@ -1209,17 +1246,26 @@
             btnMaster.style.display = "none";
         }
 
+        // 表面（漢字）と裏面（読み・場所）を分けて更新する。
+        // 次のカードが回転して戻る途中に、答えがちらっと見えてしまうのを防ぐため。
+        function renderCardFront() {
+            placeKanji.textContent = sessionDeck[0].place;
+        }
+
+        function renderCardBack() {
+            const currentCard = sessionDeck[0];
+            reading.textContent = currentCard.reading;
+            locationTag.textContent = `${formatPrefName(cleanPrefName(currentCard.pref))} ${shortCity(currentCard.city)}`.trim();
+            btnSearchGoogle.style.display = "inline-flex";
+        }
+
         function renderCurrentCardData() {
             if (sessionDeck.length === 0) {
                 showResultScreen();
                 return;
             }
-
-            const currentCard = sessionDeck[0];
-            placeKanji.textContent = currentCard.place;
-            reading.textContent = currentCard.reading;
-            locationTag.textContent = `${formatPrefName(cleanPrefName(currentCard.pref))} ${currentCard.city || ''}`;
-            btnSearchGoogle.style.display = "inline-flex";
+            renderCardFront();
+            renderCardBack();
         }
 
         function showResultScreen() {
@@ -1252,9 +1298,18 @@
 
             setTimeout(() => {
                 onCompleteDeckUpdate();
-                renderCurrentCardData();
+                if (sessionDeck.length === 0) {
+                    showResultScreen();
+                } else {
+                    renderCardFront();
+                }
                 card.className = 'card';
             }, 300);
+
+            // 裏返し終わってから、裏面（読み）を次のカードの内容に差し替える
+            setTimeout(() => {
+                if (sessionDeck.length > 0) renderCardBack();
+            }, 450);
 
             setTimeout(() => {
                 isFlipped = false;
@@ -1278,7 +1333,7 @@
 
             transitionToNextCard(direction, () => {
                 const currentCard = sessionDeck[0];
-                const key = `${cleanPrefName(currentCard.pref)}_${currentCard.place}`;
+                const key = progressKey(currentCard);
 
                 if (isMastered) {
                     sessionMasteredCount++;
@@ -1296,7 +1351,7 @@
         function searchOnGoogle() {
             if (sessionDeck.length === 0) return;
             const item = sessionDeck[0];
-            const query = `${formatPrefName(cleanPrefName(item.pref))} ${item.city || ''} ${item.place}`;
+            const query = `${formatPrefName(cleanPrefName(item.pref))} ${shortCity(item.city)} ${item.place}`;
             const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
             window.open(url, '_blank');
         }
