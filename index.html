@@ -452,6 +452,65 @@
             gap: 6px;
         }
 
+        /* 答えの面の小さな地図（県の場所を示す） */
+        .mini-map-wrap {
+            width: 100%;
+            max-width: 260px;
+            margin: 0 auto 16px;
+            position: relative;
+        }
+
+        svg.mini-map {
+            display: block;
+            width: 100%;
+            height: 120px;
+        }
+
+        svg.mini-map .prefecture {
+            fill: #262b38;
+            stroke: #0b0d12;
+            stroke-width: 0.6;
+        }
+
+        svg.mini-map .prefecture.on {
+            fill: var(--accent-cyan);
+        }
+
+        svg.mini-map .okinawa-label {
+            display: none;
+        }
+
+        svg.mini-map .okinawa-frame {
+            fill: transparent;
+            stroke: rgba(255, 255, 255, 0.18);
+            stroke-dasharray: 5 4;
+        }
+
+        svg.mini-map .mini-pin {
+            fill: none;
+            stroke: #fde047;
+            transform-box: fill-box;
+            transform-origin: center;
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            svg.mini-map .mini-pin.pulse {
+                animation: miniPulse 1.6s ease-out infinite;
+            }
+        }
+
+        @keyframes miniPulse {
+            0% { transform: scale(0.6); opacity: 1; }
+            100% { transform: scale(1.8); opacity: 0; }
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
         .btn-search-google:hover {
             background: rgba(56, 189, 248, 0.15);
             color: var(--accent-cyan);
@@ -976,7 +1035,11 @@
                     <div class="back-content">
                         <div class="location-badge" id="locationTag">---</div>
                         <div class="reading" id="reading">---</div>
-                        <button class="btn-search-google" id="btnSearchGoogle">🔍 Googleで調べる</button>
+                        <div class="mini-map-wrap" id="miniMapWrap" aria-hidden="true"></div>
+                        <div class="card-actions">
+                            <button class="btn-search-google" id="btnOpenMap">🗺 地図で見る</button>
+                            <button class="btn-search-google" id="btnSearchGoogle">🔍 Googleで調べる</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1291,6 +1354,7 @@
             reading.textContent = currentCard.reading;
             locationTag.textContent = `${formatPrefName(cleanPrefName(currentCard.pref))} ${shortCity(currentCard.city)}`.trim();
             btnSearchGoogle.style.display = "inline-flex";
+            showMiniMap(currentCard.pref, currentCard.city);
         }
 
         function renderCurrentCardData() {
@@ -1381,6 +1445,172 @@
                 sessionDeck.shift();
             });
         }
+
+        // --- 答えの面の小さな地図 ---
+        // 全国地図の図形を写し取り、その県を色付けして、県のまわりを拡大して見せる
+        const miniMapWrap = document.getElementById('miniMapWrap');
+        const SVGNS = 'http://www.w3.org/2000/svg';
+        let miniSvg = null;
+        const prefBoxes = {};   // 県名 → 全国地図の座標での範囲 [x, y, w, h]
+        const prefPins = {};    // 県名 → 目印を置く点（いちばん大きな島・陸地の中心）
+        const okinawaPins = {}; // 沖縄の島ごとの目印（本島・宮古・八重山）
+
+        // 要素の座標を、地図全体（svg）の座標に直すための行列を、親をたどって掛け合わせる
+        function matrixToRoot(el, root) {
+            let m = root.createSVGMatrix();
+            const chain = [];
+            for (let n = el; n && n !== root; n = n.parentNode) chain.unshift(n);
+            chain.forEach(n => {
+                if (n.transform && n.transform.baseVal.numberOfItems) {
+                    m = m.multiply(n.transform.baseVal.consolidate().matrix);
+                }
+            });
+            return m;
+        }
+
+        // 形の中に入っている点を探す（くびれた形だと、範囲の中心が海や湖になることがあるため）
+        function insidePoint(sh, b, m) {
+            const toRoot = (x, y) => [m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f];
+            const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+            if (!sh.isPointInFill) return toRoot(cx, cy);
+            const q = mapSvg.createSVGPoint();
+            const inside = (x, y) => { q.x = x; q.y = y; try { return sh.isPointInFill(q); } catch (e) { return true; } };
+            if (inside(cx, cy)) return toRoot(cx, cy);
+            // 中心が形の外なら、細かく区切って形の中の点を集め、
+            // まわりにも形の中の点が多い場所（＝島ではなく大きな陸地の真ん中）を選ぶ
+            const N = 28, grid = [];
+            for (let i = 0; i <= N; i++) { grid.push([]); for (let j = 0; j <= N; j++) grid[i].push(inside(b.x + b.width * i / N, b.y + b.height * j / N)); }
+            let best = null, bs = -1, bd = Infinity;
+            for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+                if (!grid[i][j]) continue;
+                let score = 0;
+                for (let di = -3; di <= 3; di++) for (let dj = -3; dj <= 3; dj++) {
+                    const a = i + di, c = j + dj;
+                    if (a >= 0 && a <= N && c >= 0 && c <= N && grid[a][c]) score++;
+                }
+                const x = b.x + b.width * i / N, y = b.y + b.height * j / N, d = Math.hypot(x - cx, y - cy);
+                if (score > bs || (score === bs && d < bd)) { bs = score; bd = d; best = [x, y]; }
+            }
+            return best ? toRoot(best[0], best[1]) : toRoot(cx, cy);
+        }
+
+        function measurePrefectures() {
+            document.querySelectorAll('#japanMapSvg .prefecture').forEach(g => {
+                const t = g.querySelector('title');
+                if (!t) return;
+                const key = cleanPrefName(t.textContent);
+                // 沖縄は枠を除いた島だけで測る
+                const shapes = [...g.querySelectorAll('polygon, path')];
+                let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, big = null, bigArea = -1;
+                const centers = [];
+                shapes.forEach(sh => {
+                    const b = sh.getBBox(), m = matrixToRoot(sh, mapSvg);
+                    let sx0 = Infinity, sy0 = Infinity, sx1 = -Infinity, sy1 = -Infinity;
+                    [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]].forEach(([x, y]) => {
+                        const px = m.a * x + m.c * y + m.e, py = m.b * x + m.d * y + m.f;
+                        sx0 = Math.min(sx0, px); sy0 = Math.min(sy0, py); sx1 = Math.max(sx1, px); sy1 = Math.max(sy1, py);
+                    });
+                    x0 = Math.min(x0, sx0); y0 = Math.min(y0, sy0); x1 = Math.max(x1, sx1); y1 = Math.max(y1, sy1);
+                    // 面積は形そのものから求める（細長い島の列で、範囲の四角だけが大きくなるのを避ける）
+                    let area = (sx1 - sx0) * (sy1 - sy0);
+                    if (sh.points && sh.points.numberOfItems > 2) {
+                        let a2 = 0;
+                        const pts = sh.points, n = pts.numberOfItems;
+                        for (let i = 0; i < n; i++) {
+                            const p1 = pts.getItem(i), p2 = pts.getItem((i + 1) % n);
+                            a2 += p1.x * p2.y - p2.x * p1.y;
+                        }
+                        area = Math.abs(a2) / 2 * Math.abs(m.a * m.d - m.b * m.c);
+                    }
+                    const c = insidePoint(sh, b, m);
+                    centers.push({ c, area, local: [b.x + b.width / 2, b.y + b.height / 2] });
+                    if (area > bigArea) { bigArea = area; big = c; }
+                });
+                if (isFinite(x0)) prefBoxes[key] = [x0, y0, x1 - x0, y1 - y0];
+                if (big) prefPins[key] = big;
+                if (key === '沖縄') {
+                    // 地図の図形の中で、本島・宮古・八重山それぞれに近い島を探す（座標は沖縄の図形の中での位置）
+                    const anchors = { hontou: [290, 20], miyako: [135, 108], yaeyama: [60, 120] };
+                    Object.keys(anchors).forEach(k => {
+                        const [ax, ay] = anchors[k];
+                        let best = null, bd = Infinity;
+                        centers.forEach(o => {
+                            const d = Math.hypot(o.local[0] - ax, o.local[1] - ay) - Math.sqrt(o.area) * 0.5;
+                            if (d < bd) { bd = d; best = o.c; }
+                        });
+                        if (best) okinawaPins[k] = best;
+                    });
+                }
+            });
+        }
+
+        function buildMiniMap() {
+            miniSvg = document.createElementNS(SVGNS, 'svg');
+            miniSvg.setAttribute('class', 'mini-map');
+            miniSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            const art = mapSvg.querySelector('.svg-map').cloneNode(true);
+            art.querySelectorAll('title').forEach(t => t.remove());
+            art.querySelectorAll('[fill]').forEach(n => n.removeAttribute('fill'));
+            art.querySelectorAll('[stroke]').forEach(n => n.removeAttribute('stroke'));
+            miniSvg.appendChild(art);
+            const pin = document.createElementNS(SVGNS, 'circle');
+            pin.setAttribute('class', 'mini-pin');
+            miniSvg.appendChild(pin);
+            miniMapWrap.appendChild(miniSvg);
+        }
+
+        function pinFor(key, city) {
+            if (key === '沖縄') {
+                const c = city || '';
+                if (/宮古/.test(c) && okinawaPins.miyako) return okinawaPins.miyako;
+                if (/石垣|八重山|竹富|与那国/.test(c) && okinawaPins.yaeyama) return okinawaPins.yaeyama;
+                if (okinawaPins.hontou) return okinawaPins.hontou;
+            }
+            return prefPins[key];
+        }
+
+        function showMiniMap(prefRaw, city) {
+            if (!miniSvg) return;
+            const key = cleanPrefName(prefRaw);
+            const box = prefBoxes[key];
+            const groups = [...miniSvg.querySelectorAll('.prefecture')];
+            const mainGroups = [...mapSvg.querySelectorAll('.prefecture')];
+            let target = null;
+            groups.forEach((g, i) => {
+                const t = mainGroups[i] && mainGroups[i].querySelector('title');
+                const on = !!t && cleanPrefName(t.textContent) === key;
+                g.classList.toggle('on', on);
+                if (on) target = mainGroups[i];
+            });
+            if (!box || !target) { miniMapWrap.style.display = 'none'; return; }
+            miniMapWrap.style.display = '';
+            // その県の地方全体が入るように表示範囲を決める（小さな県でも周りとの位置関係が分かる）
+            let vb = REGION_VIEWBOXES[getRegionClass(target)];
+            if (vb) vb = vb.split(' ').map(Number); else vb = [box[0] - 60, box[1] - 60, box[2] + 120, box[3] + 120];
+            miniSvg.setAttribute('viewBox', vb.join(' '));
+            // 県の中心に、ふくらむ輪の目印を置く
+            const pin = miniSvg.querySelector('.mini-pin');
+            const r = Math.max(vb[2], vb[3]) * 0.045;
+            const pt = pinFor(key, city) || [box[0] + box[2] / 2, box[1] + box[3] / 2];
+            pin.setAttribute('cx', pt[0]);
+            pin.setAttribute('cy', pt[1]);
+            pin.setAttribute('r', r);
+            pin.setAttribute('stroke-width', r * 0.28);
+            pin.classList.remove('pulse'); void pin.getBBox(); pin.classList.add('pulse');
+        }
+
+        try { measurePrefectures(); buildMiniMap(); } catch (e) { miniMapWrap.style.display = 'none'; }
+
+        // Googleマップで、その地名の正確な場所を開く
+        function openInMaps() {
+            if (sessionDeck.length === 0) return;
+            const item = sessionDeck[0];
+            const query = `${formatPrefName(cleanPrefName(item.pref))} ${shortCity(item.city)} ${item.place}`;
+            window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank');
+        }
+        const btnOpenMap = document.getElementById('btnOpenMap');
+        btnOpenMap.addEventListener('pointerdown', (e) => e.stopPropagation());
+        btnOpenMap.addEventListener('click', (e) => { e.stopPropagation(); openInMaps(); });
 
         function searchOnGoogle() {
             if (sessionDeck.length === 0) return;
