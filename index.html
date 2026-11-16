@@ -570,6 +570,19 @@
             stroke-dasharray: 5 4;
         }
 
+        svg.mini-map .mini-dot {
+            fill: #fde047;
+        }
+
+        .mini-note {
+            position: absolute;
+            right: 4px;
+            bottom: 2px;
+            font-size: 10px;
+            color: var(--text-sub);
+            opacity: 0.8;
+        }
+
         svg.mini-map .mini-pin {
             fill: none;
             stroke: #fde047;
@@ -1549,7 +1562,7 @@
             triviaEl.textContent = note;
             triviaEl.style.display = note ? 'block' : 'none';
             cardBackEl.classList.toggle('has-trivia', !!note);
-            showMiniMap(currentCard.pref, currentCard.city);
+            showMiniMap(currentCard.pref, currentCard.city, currentCard);
         }
 
         function renderCurrentCardData() {
@@ -1645,9 +1658,54 @@
         const miniMapWrap = document.getElementById('miniMapWrap');
         const SVGNS = 'http://www.w3.org/2000/svg';
         let miniSvg = null;
+        let miniMapNote = null;
         const prefBoxes = {};   // 県名 → 全国地図の座標での範囲 [x, y, w, h]
         const prefPins = {};    // 県名 → 目印を置く点（いちばん大きな島・陸地の中心）
         const okinawaPins = {}; // 沖縄の島ごとの目印（本島・宮古・八重山）
+        const prefMainBoxes = {}; // 県名 → 主な陸地（小さな離島を除く）の、地図上の範囲 [x0, y0, x1, y1]
+        // 緯度・経度を、全国地図の上の位置に直す式。
+        // Geolonia住所データ（CC BY 4.0）の地点が、それぞれの県の形の中に入るように合わせた係数
+        // （u = 経度 − 137、v = 緯度 − 36）
+        const GEO_FIT = [458.5807, 52.7083, 0.4688, -0.3, -0.075, 643.3276, 0.4688, -63.7911, -0.1687, -0.075];
+        // 沖縄は地図の左上に別枠で描かれているので、沖縄の緯度経度の範囲 [南, 西, 北, 東] を枠の中の島の範囲に対応させる
+        const OKINAWA_LATLNG = [24.059, 122.988, 27.873, 128.305];
+        function geoToMap(key, lat, lng) {
+            if (!isFinite(lat) || !isFinite(lng)) return null;
+            let x, y;
+            if (key === '沖縄') {
+                const g = OKINAWA_LATLNG, b = prefMainBoxes['沖縄'];
+                if (!b) return null;
+                x = b[0] + (lng - g[1]) / (g[3] - g[1]) * (b[2] - b[0]);
+                y = b[1] + (g[2] - lat) / (g[2] - g[0]) * (b[3] - b[1]);
+            } else {
+                const P = GEO_FIT, u = lng - 137, v = lat - 36;
+                x = P[0] + P[1] * u + P[2] * v + P[3] * u * v + P[4] * v * v;
+                y = P[5] + P[6] * u + P[7] * v + P[8] * u * u + P[9] * u * v;
+            }
+            return snapIntoPref(key, x, y);
+        }
+        // 海岸近くで県の形の外に出たときは、県の中のいちばん近い場所へ寄せる
+        function snapIntoPref(key, x, y) {
+            const g = [...mapSvg.querySelectorAll('.prefecture')].find(e => {
+                const t = e.querySelector('title');
+                return t && cleanPrefName(t.textContent) === key;
+            });
+            if (!g) return [x, y];
+            const shapes = [...g.querySelectorAll('polygon, path')].map(sh => ({ sh, inv: matrixToRoot(sh, mapSvg).inverse() }));
+            const q = mapSvg.createSVGPoint();
+            const inside = (px, py) => shapes.some(({ sh, inv }) => {
+                q.x = inv.a * px + inv.c * py + inv.e; q.y = inv.b * px + inv.d * py + inv.f;
+                try { return sh.isPointInFill(q); } catch (e) { return true; }
+            });
+            if (inside(x, y)) return [x, y];
+            for (let r = 1; r <= 24; r += 1) {
+                for (let k = 0; k < 16; k++) {
+                    const t = k / 16 * Math.PI * 2, px = x + Math.cos(t) * r, py = y + Math.sin(t) * r;
+                    if (inside(px, py)) return [px, py];
+                }
+            }
+            return [x, y];
+        }
 
         // 要素の座標を、地図全体（svg）の座標に直すための行列を、親をたどって掛け合わせる
         function matrixToRoot(el, root) {
@@ -1697,6 +1755,7 @@
                 const shapes = [...g.querySelectorAll('polygon, path')];
                 let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, big = null, bigArea = -1;
                 const centers = [];
+                const rects = [];
                 shapes.forEach(sh => {
                     const b = sh.getBBox(), m = matrixToRoot(sh, mapSvg);
                     let sx0 = Infinity, sy0 = Infinity, sx1 = -Infinity, sy1 = -Infinity;
@@ -1705,6 +1764,7 @@
                         sx0 = Math.min(sx0, px); sy0 = Math.min(sy0, py); sx1 = Math.max(sx1, px); sy1 = Math.max(sy1, py);
                     });
                     x0 = Math.min(x0, sx0); y0 = Math.min(y0, sy0); x1 = Math.max(x1, sx1); y1 = Math.max(y1, sy1);
+                    rects.push({ r: [sx0, sy0, sx1, sy1], a: (sx1 - sx0) * (sy1 - sy0) });
                     // 面積は形そのものから求める（細長い島の列で、範囲の四角だけが大きくなるのを避ける）
                     let area = (sx1 - sx0) * (sy1 - sy0);
                     if (sh.points && sh.points.numberOfItems > 2) {
@@ -1721,6 +1781,13 @@
                     if (area > bigArea) { bigArea = area; big = c; }
                 });
                 if (isFinite(x0)) prefBoxes[key] = [x0, y0, x1 - x0, y1 - y0];
+                if (rects.length) {
+                    // 主な陸地の範囲：いちばん大きな形の12%以上の大きさの形だけで測る（沖縄は島全部）
+                    const maxA = Math.max(...rects.map(o => o.a));
+                    const main = key === '沖縄' ? rects : rects.filter(o => o.a >= maxA * 0.12);
+                    prefMainBoxes[key] = [Math.min(...main.map(o => o.r[0])), Math.min(...main.map(o => o.r[1])),
+                        Math.max(...main.map(o => o.r[2])), Math.max(...main.map(o => o.r[3]))];
+                }
                 if (big) prefPins[key] = big;
                 if (key === '沖縄') {
                     // 地図の図形の中で、本島・宮古・八重山それぞれに近い島を探す（座標は沖縄の図形の中での位置）
@@ -1750,6 +1817,12 @@
             const pin = document.createElementNS(SVGNS, 'circle');
             pin.setAttribute('class', 'mini-pin');
             miniSvg.appendChild(pin);
+            const dot = document.createElementNS(SVGNS, 'circle');
+            dot.setAttribute('class', 'mini-dot');
+            miniSvg.appendChild(dot);
+            miniMapNote = document.createElement('div');
+            miniMapNote.className = 'mini-note';
+            miniMapWrap.appendChild(miniMapNote);
             miniMapWrap.appendChild(miniSvg);
         }
 
@@ -1763,7 +1836,7 @@
             return prefPins[key];
         }
 
-        function showMiniMap(prefRaw, city) {
+        function showMiniMap(prefRaw, city, item) {
             if (!miniSvg) return;
             const key = cleanPrefName(prefRaw);
             const box = prefBoxes[key];
@@ -1778,19 +1851,32 @@
             });
             if (!box || !target) { miniMapWrap.style.display = 'none'; return; }
             miniMapWrap.style.display = '';
-            // その県の地方全体が入るように表示範囲を決める（小さな県でも周りとの位置関係が分かる）
-            let vb = REGION_VIEWBOXES[getRegionClass(target)];
-            if (vb) vb = vb.split(' ').map(Number); else vb = [box[0] - 60, box[1] - 60, box[2] + 120, box[3] + 120];
+            // 県とそのまわりが入るように表示範囲を決める（小さな県でも周りとの位置関係が分かる）
+            // 地名の緯度・経度が分かっていればその場所に、なければ県（沖縄は島）の中心に目印を置く
+            const exact = item && item.lat ? geoToMap(key, item.lat, item.lng) : null;
+            const pt = exact || pinFor(key, city) || [box[0] + box[2] / 2, box[1] + box[3] / 2];
+            // 目印を真ん中に、県がだいたい入る大きさで表示する（東京のように島で縦に長い県は、本土の大きさに合わせる）
+            const mb = prefMainBoxes[key] || [box[0], box[1], box[0] + box[2], box[1] + box[3]];
+            const mw = mb[2] - mb[0], mh = mb[3] - mb[1];
+            const span = Math.min(Math.max(mw, mh), 2.2 * Math.min(mw, mh)) * 1.5 + 20;
+            let vb = [pt[0] - span / 2, pt[1] - span / 2, span, span];
+            // 横長の枠に合わせて、上下が切れないよう横に広げる
+            const aspect = 260 / 120;
+            if (vb[2] / vb[3] < aspect) { const nw = vb[3] * aspect; vb[0] -= (nw - vb[2]) / 2; vb[2] = nw; }
             miniSvg.setAttribute('viewBox', vb.join(' '));
             // 県の中心に、ふくらむ輪の目印を置く
             const pin = miniSvg.querySelector('.mini-pin');
-            const r = Math.max(vb[2], vb[3]) * 0.045;
-            const pt = pinFor(key, city) || [box[0] + box[2] / 2, box[1] + box[3] / 2];
+            const r = Math.max(vb[2], vb[3]) * 0.035;
+
+            miniMapNote.textContent = !item || !item.geo ? 'おおよその県の位置' : (item.geo === 't' ? '' : '市町村のあたり');
+            miniMapNote.style.display = miniMapNote.textContent ? '' : 'none';
             pin.setAttribute('cx', pt[0]);
             pin.setAttribute('cy', pt[1]);
             pin.setAttribute('r', r);
             pin.setAttribute('stroke-width', r * 0.28);
             pin.classList.remove('pulse'); void pin.getBBox(); pin.classList.add('pulse');
+            const dot = miniSvg.querySelector('.mini-dot');
+            dot.setAttribute('cx', pt[0]); dot.setAttribute('cy', pt[1]); dot.setAttribute('r', r * 0.32);
         }
 
         try { measurePrefectures(); buildMiniMap(); } catch (e) { miniMapWrap.style.display = 'none'; }
@@ -1806,14 +1892,17 @@
             if (sessionDeck.length === 0) return;
             const item = sessionDeck[0];
             const query = `${formatPrefName(cleanPrefName(item.pref))} ${shortCity(item.city)} ${item.place}`;
-            const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+            // 町・字まで位置が分かっている地名は、その地点を中心に地名で検索する
+            const near = item.geo === 't' ? `${item.lat},${item.lng}` : '';
+            const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}` +
+                (near ? `&center=${near}&zoom=14` : '');
             if (!isIOS) { window.open(webUrl, '_blank'); return; }
             mapsFallbackLink.href = webUrl;
             const started = Date.now();
             let left = false;
             const onHide = () => { if (document.hidden) left = true; };
             document.addEventListener('visibilitychange', onHide);
-            window.location.href = `comgooglemaps://?q=${encodeURIComponent(query)}`;
+            window.location.href = `comgooglemaps://?q=${encodeURIComponent(query)}` + (near ? `&center=${near}&zoom=14` : '');
             clearTimeout(mapsTimer);
             mapsTimer = setTimeout(() => {
                 document.removeEventListener('visibilitychange', onHide);
