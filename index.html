@@ -504,6 +504,26 @@
             100% { transform: scale(1.8); opacity: 0; }
         }
 
+        .maps-fallback {
+            display: none;
+            margin-top: 10px;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--text-sub);
+        }
+
+        .maps-fallback a {
+            color: var(--accent-cyan);
+            font-weight: 700;
+            padding: 6px 10px;
+            border: 1px solid rgba(56, 189, 248, 0.4);
+            border-radius: 16px;
+            text-decoration: none;
+        }
+
         .card-actions {
             display: flex;
             gap: 8px;
@@ -1039,6 +1059,10 @@
                         <div class="card-actions">
                             <button class="btn-search-google" id="btnOpenMap">🗺 地図で見る</button>
                             <button class="btn-search-google" id="btnSearchGoogle">🔍 Googleで調べる</button>
+                        </div>
+                        <div class="maps-fallback" id="mapsFallback">
+                            Googleマップのアプリが開けませんでした。
+                            <a id="mapsFallbackLink" href="#" target="_blank" rel="noopener">ブラウザで開く</a>
                         </div>
                     </div>
                 </div>
@@ -1601,13 +1625,37 @@
 
         try { measurePrefectures(); buildMiniMap(); } catch (e) { miniMapWrap.style.display = 'none'; }
 
-        // Googleマップで、その地名の正確な場所を開く
+        // Googleマップで、その地名の正確な場所を開く。
+        // iPad・iPhoneでは、まずGoogleマップのアプリを開く。アプリがなければブラウザで開く案内を出す
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const mapsFallback = document.getElementById('mapsFallback');
+        const mapsFallbackLink = document.getElementById('mapsFallbackLink');
+        let mapsTimer = null;
         function openInMaps() {
             if (sessionDeck.length === 0) return;
             const item = sessionDeck[0];
             const query = `${formatPrefName(cleanPrefName(item.pref))} ${shortCity(item.city)} ${item.place}`;
-            window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank');
+            const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+            if (!isIOS) { window.open(webUrl, '_blank'); return; }
+            mapsFallbackLink.href = webUrl;
+            const started = Date.now();
+            let left = false;
+            const onHide = () => { if (document.hidden) left = true; };
+            document.addEventListener('visibilitychange', onHide);
+            window.location.href = `comgooglemaps://?q=${encodeURIComponent(query)}`;
+            clearTimeout(mapsTimer);
+            mapsTimer = setTimeout(() => {
+                document.removeEventListener('visibilitychange', onHide);
+                // アプリに切り替わらなかったときだけ、ブラウザで開くボタンを見せる
+                if (!left && !document.hidden && Date.now() - started < 4000) {
+                    mapsFallback.style.display = 'flex';
+                    setTimeout(() => { mapsFallback.style.display = 'none'; }, 6000);
+                }
+            }, 1600);
         }
+        mapsFallback.addEventListener('pointerdown', (e) => e.stopPropagation());
+        mapsFallbackLink.addEventListener('click', (e) => { e.stopPropagation(); mapsFallback.style.display = 'none'; });
         const btnOpenMap = document.getElementById('btnOpenMap');
         btnOpenMap.addEventListener('pointerdown', (e) => e.stopPropagation());
         btnOpenMap.addEventListener('click', (e) => { e.stopPropagation(); openInMaps(); });
